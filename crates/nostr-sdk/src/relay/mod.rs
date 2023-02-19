@@ -54,6 +54,9 @@ pub enum Error {
     /// Write actions disabled
     #[error("write actions are disabled for this relay")]
     WriteDisabled,
+    /// Filters empty
+    #[error("filters empty")]
+    FiltersEmpty,
 }
 
 /// Relay connection status
@@ -320,7 +323,7 @@ impl Relay {
                     while let Some((relay_event, oneshot_sender)) = rx.recv().await {
                         match relay_event {
                             RelayEvent::SendMsg(msg) => {
-                                log::trace!("Sending message {}", msg.as_json());
+                                log::debug!("Sending message {}", msg.as_json());
                                 if let Err(e) = ws_tx.send(WsMessage::Text(msg.as_json())).await {
                                     log::error!(
                                         "Impossible to send msg to {}: {}",
@@ -412,11 +415,14 @@ impl Relay {
                 // Subscribe to relay
                 if self.opts.read() {
                     if let Err(e) = self.subscribe(false).await {
-                        log::error!(
-                            "Impossible to subscribe to {}: {}",
-                            self.url(),
-                            e.to_string()
-                        )
+                        match e {
+                            Error::FiltersEmpty => (),
+                            _ => log::error!(
+                                "Impossible to subscribe to {}: {}",
+                                self.url(),
+                                e.to_string()
+                            ),
+                        }
                     }
                 }
             }
@@ -508,13 +514,18 @@ impl Relay {
         }
 
         let mut subscription = SUBSCRIPTION.lock().await;
+        let filters = subscription.get_filters();
+
+        if filters.is_empty() {
+            return Err(Error::FiltersEmpty);
+        }
+
         let channel = subscription.get_channel(&self.url());
         let channel_id = channel.id();
-        self.send_msg(
-            ClientMessage::new_req(channel_id.clone(), subscription.get_filters()),
-            wait,
-        )
-        .await?;
+
+        self.send_msg(ClientMessage::new_req(channel_id.clone(), filters), wait)
+            .await?;
+
         Ok(channel_id)
     }
 
